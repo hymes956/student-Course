@@ -1,0 +1,15 @@
+# 工作区内部记忆（AI 助手的工作笔记，不属于项目产物）
+.workbuddy-ai/
+
+# macOS
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 临时文件
+*.bak
+*.tmp
+*.log
