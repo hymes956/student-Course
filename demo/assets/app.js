@@ -21,7 +21,9 @@
       labRequests: 100,
       labCapacity: 10,
       labSame: 0,
-      sheetOpen: false
+      sheetOpen: false,
+      /* null = 默认展开第一条推荐；'' = 全部收起；其他值 = 展开该教学班 */
+      aiOpen: null
     }
   };
   global.App = App;
@@ -41,6 +43,7 @@
     board: '<rect x="2.5" y="3" width="11" height="7.5" rx="1.2"/><path d="M8 10.5v2M5.5 13.5h5"/>',
     bolt: '<path d="M9.2 2 4 9h3.3l-.9 5L12 7H8.6z"/>',
     chart: '<path d="M3 13.2V8.6M6.3 13.2V4M9.7 13.2V9.4M13 13.2V6.2"/>',
+    spark: '<path d="M8 2.2l1.4 4.2 4.2 1.4-4.2 1.4L8 13.4 6.6 9.2 2.4 7.8l4.2-1.4z"/>',
     more: '<circle cx="3.6" cy="3.6" r="1.35" fill="currentColor"/><circle cx="8" cy="3.6" r="1.35" fill="currentColor"/>' +
           '<circle cx="12.4" cy="3.6" r="1.35" fill="currentColor"/><circle cx="3.6" cy="8" r="1.35" fill="currentColor"/>' +
           '<circle cx="8" cy="8" r="1.35" fill="currentColor"/><circle cx="12.4" cy="8" r="1.35" fill="currentColor"/>' +
@@ -70,6 +73,7 @@
       { id: 'profile', label: '个人中心', icon: 'user' }
     ] },
     { group: '演示', items: [
+      { id: 'ai', label: 'AI 选课推荐', icon: 'spark' },
       { id: 'teacher', label: '教师端', icon: 'board' },
       { id: 'admin', label: '教务看板', icon: 'chart' },
       { id: 'lab', label: '并发实验室', icon: 'bolt' }
@@ -92,6 +96,7 @@
     { id: 'homework', label: '我的作业', icon: 'file', group: '学习' },
     { id: 'messages', label: '消息通知', icon: 'bell', group: '其他' },
     { id: 'profile', label: '个人中心', icon: 'user', group: '其他' },
+    { id: 'ai', label: 'AI 选课推荐', icon: 'spark', group: '演示' },
     { id: 'teacher', label: '教师端', icon: 'board', group: '演示' },
     { id: 'admin', label: '教务看板', icon: 'chart', group: '演示' },
     { id: 'lab', label: '并发实验室', icon: 'bolt', group: '演示' }
@@ -128,6 +133,7 @@
       case 'messages': return { title: '消息通知', html: V.messages() };
       case 'profile': return { title: '个人中心', html: V.profile() };
       case 'teacher': return { title: '教师端', html: V.teacher() };
+      case 'ai': return { title: 'AI 选课推荐', html: V.aiRecommend() };
       case 'admin': return { title: '教务统计看板', html: V.admin() };
       case 'lab': return { title: '并发实验室', html: V.lab() };
       default: return { title: '工作台', html: V.dashboard() };
@@ -433,6 +439,13 @@
         App.ui.keyword = '';
         stopTimer();
         toast('演示数据已重置', 'ok');
+        render();
+        break;
+      }
+
+      case 'ai-toggle': {
+        /* data-open 由渲染时写入，直接读它比再算一遍展开状态可靠 */
+        App.ui.aiOpen = el.getAttribute('data-open') === '1' ? '' : id;
         render();
         break;
       }

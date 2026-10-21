@@ -106,6 +106,26 @@
     try { ls.setItem(KEY, JSON.stringify(state)); } catch (e) { /* 配额满，忽略 */ }
   }
 
+  /* 选课轮次相对"今天"生成，而不是写死日期。
+     写死日期的演示工程过几周就会变成「本轮选课已结束」，一键选课全废。 */
+  function roundWindow() {
+    var t = now();
+    return {
+      openAt: fmtDateTime(new Date(t.getTime() - 7 * 86400000)),
+      closeAt: fmtDateTime(new Date(t.getTime() + 30 * 86400000))
+    };
+  }
+
+  /* 老 localStorage 里存的截止日可能已经过去，自动顺延一期 */
+  function ensureRoundOpen() {
+    if (!state) return;
+    var r = state.enrollRound;
+    if (!r || !r.closeAt || now() > parseDateTime(r.closeAt)) {
+      state.enrollRound = roundWindow();
+      save();
+    }
+  }
+
   function buildFresh() {
     var s = {
       version: 1,
@@ -113,7 +133,7 @@
       termKey: SEED.termKey,
       maxCredit: SEED.maxCredit,
       weeks: SEED.weeks,
-      enrollRound: { openAt: '2026-09-20 08:00', closeAt: '2026-09-30 23:59' },
+      enrollRound: roundWindow(),
       currentUserId: null,
       offerings: clone(SEED.offerings),
       enrollments: [],
@@ -214,7 +234,7 @@
         var raw = ls.getItem(KEY);
         if (raw) {
           var parsed = JSON.parse(raw);
-          if (parsed && parsed.version === 1) { state = parsed; return state; }
+          if (parsed && parsed.version === 1) { state = parsed; ensureRoundOpen(); return state; }
         }
       } catch (e) { /* 数据损坏则重建 */ }
     }

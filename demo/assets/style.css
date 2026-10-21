@@ -162,6 +162,20 @@ svg.mi { width: 19px; height: 19px; }
 .card-body.tight { padding: 12px; }
 .card-body.flush { padding: 0; }
 
+/* ---------- AI 选课推荐 ---------- */
+.ai-card-head { flex-wrap: wrap; }
+.ai-rank {
+  width: 28px; height: 28px; border-radius: 50%; flex: none;
+  background: var(--primary-50); color: var(--primary);
+  display: grid; place-items: center; font-size: 13px; font-weight: 600;
+}
+.ai-score { font-size: 26px; font-weight: 600; line-height: 1.1; color: var(--primary); }
+.ai-score .unit { font-size: 12px; font-weight: 400; color: var(--text-3); margin-left: 2px; }
+.ai-stack { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--line-2); }
+.ai-stack i { display: block; height: 100%; }
+.ai-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
+.ai-legend b { color: var(--text); font-weight: 600; }
+
 .grid { display: grid; gap: 14px; }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -232,6 +246,9 @@ svg.mi { width: 19px; height: 19px; }
 .table tbody tr:last-child td { border-bottom: none; }
 .table tbody tr:hover { background: var(--surface-2); }
 .table .num { text-align: right; font-variant-numeric: tabular-nums; }
+/* 窄屏放不下的表格横向滚动，而不是把每列压成竖排单字 */
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.table-scroll > .table { min-width: 460px; }
 
 /* ---------- 表单 ---------- */
 .field { margin-bottom: 14px; }
@@ -471,6 +488,8 @@ textarea.input { resize: vertical; min-height: 92px; line-height: 1.65; }
   /* 用 minmax(0,1fr) 而不是 1fr：1fr 的下限是内容的 min-content，
      遇到宽表格会把整列撑出屏幕，导致整页横向滚动 */
   .grid-2, .grid-3, .grid-4, .grid-cards { grid-template-columns: minmax(0, 1fr); }
+  /* AI 页的四个指标在窄屏两列就够，单列会占掉一整屏 */
+  .ai-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .timetable { grid-template-columns: 34px repeat(7, minmax(56px, 1fr)); overflow-x: auto; }
   /* 分段控件在小屏放不下时横向滚动，而不是把整页撑宽 */
   .seg { max-width: 100%; overflow-x: auto; }

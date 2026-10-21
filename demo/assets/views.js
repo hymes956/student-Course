@@ -1286,11 +1286,167 @@
     return h;
   }
 
+  /* ===========================================================
+   * AI 选课推荐
+   * 打分全部来自 assets/ai.js，这里只负责把分数和依据画出来
+   * =========================================================== */
+
+  var AI_COLOR = {
+    direction: 'var(--primary)', chain: 'var(--ok)', schedule: 'var(--purple)',
+    capacity: 'var(--warn)', teacher: 'var(--text-3)'
+  };
+
+  var AI_VERDICT = {
+    strong: { label: '强烈推荐', cls: 'badge-ok' },
+    good: { label: '值得考虑', cls: 'badge-info' },
+    ok: { label: '备选', cls: 'badge-purple' }
+  };
+
+  function aiRecommend() {
+    var me = S.currentUser();
+    var ui = global.App.ui;
+    var AI = global.AI;
+    if (!AI) return '<div class="card"><div class="card-body">推荐引擎未加载。</div></div>';
+
+    var res = AI.recommend(me.id, { top: 4 });
+    var p = res.profile, st = res.stats;
+
+    /* null 表示"还没点过"，默认展开第一条 */
+    var openId = ui.aiOpen === null
+      ? (res.items[0] ? res.items[0].offeringId : '')
+      : ui.aiOpen;
+
+    var primaryCat = S.getCategory(p.cats[0]);
+
+    var h = '';
+    h += '<div class="page-head row-between wrap"><div><h2>AI 选课推荐</h2>' +
+         '<div class="sub">5 个维度加权打分 · 每一条建议都能追溯到具体数据，不是随机挑的</div></div>' +
+         '<span class="badge badge-purple">规则引擎 · 离线运行</span></div>';
+
+    /* ---------- 学生画像 ---------- */
+    h += '<div class="grid grid-4 mb16 ai-stats">' +
+      '<div class="stat"><div class="stat-num">' + p.earnedCredit + '<span class="unit">学分</span></div>' +
+        '<div class="stat-label">累计已修 · ' + esc(p.major) + '</div></div>' +
+      '<div class="stat"><div class="stat-num">' + p.selectedCredit +
+        '<span class="unit">/ ' + p.maxCredit + '</span></div>' +
+        '<div class="stat-label">本学期已选学分 · ' + p.courseCount + ' 门课</div>' +
+        '<div class="bar mt8"><i style="width:' +
+          Math.round(p.selectedCredit / p.maxCredit * 100) + '%"></i></div></div>' +
+      '<div class="stat"><div class="stat-num" style="font-size:17px">' +
+        esc(primaryCat ? primaryCat.name : '—') + '</div>' +
+        '<div class="stat-label">主修方向（按专业推断）</div></div>' +
+      '<div class="stat"><div class="stat-num">' + st.recommended + '<span class="unit">门</span></div>' +
+        '<div class="stat-label">可推荐 · 已剔除 ' + (st.total - st.recommended) + ' 门</div></div>' +
+    '</div>';
+
+    /* ---------- 推荐卡片 ---------- */
+    if (!res.items.length) {
+      h += '<div class="card"><div class="card-body muted">' +
+           '没有可推荐的课了 —— 能选的都已经选完、排满，或与现有课表冲突。</div></div>';
+    }
+
+    res.items.forEach(function (it, idx) {
+      var vd = AI_VERDICT[it.verdict] || AI_VERDICT.ok;
+      var expanded = openId === it.offeringId;
+
+      h += '<div class="card mb16">';
+      h += '<div class="card-head ai-card-head"><div class="row" style="gap:12px;align-items:center">' +
+        '<div class="ai-rank">' + (idx + 1) + '</div>' +
+        '<div><h3>' + esc(it.name) + ' <span class="small dim">' + esc(it.code) + '</span></h3>' +
+        '<div class="sub">' + esc(it.teacher) + ' · ' + esc(it.slotLabel) + ' · ' +
+          it.credit + ' 学分 · ' + esc(it.catName) + '</div></div></div>' +
+        '<div style="text-align:right"><div class="ai-score">' + it.score +
+          '<span class="unit">分</span></div>' +
+          '<span class="badge ' + vd.cls + '">' + vd.label + '</span></div></div>';
+
+      h += '<div class="card-body">';
+
+      /* 贡献条：每段宽度 = 该项得分，总长度就是总分（满分 100） */
+      h += '<div class="ai-stack">';
+      it.breakdown.forEach(function (b) {
+        if (b.delta > 0) {
+          h += '<i style="width:' + b.delta + '%;background:' +
+               (AI_COLOR[b.key] || 'var(--text-3)') + '"></i>';
+        }
+      });
+      h += '</div>';
+      h += '<div class="ai-legend">' + it.breakdown.map(function (b) {
+        return '<span><b>' + b.label + '</b> +' + b.delta + '</span>';
+      }).join('') + '</div>';
+
+      /* 操作 */
+      h += '<div class="row wrap mt16" style="gap:8px">';
+      if (it.full) {
+        h += '<button class="btn btn-sm" data-act="waitlist" data-id="' + it.offeringId + '">' +
+             '加入候补（第 ' + (S.waitlistCount(it.offeringId) + 1) + ' 位）</button>';
+      } else {
+        h += '<button class="btn btn-sm" data-act="enroll" data-id="' + it.offeringId + '">选这门课</button>';
+      }
+      h += '<button class="btn btn-sm btn-ghost" data-act="goto" data-href="#/course/' + it.offeringId + '">查看课程</button>' +
+           '<button class="btn btn-sm btn-ghost" data-act="ai-toggle" data-id="' + it.offeringId + '" ' +
+             'data-open="' + (expanded ? '1' : '0') + '">' + (expanded ? '收起明细' : '评分明细') + '</button>' +
+           '</div>';
+
+      /* 评分明细 */
+      if (expanded) {
+        h += '<div class="table-scroll mt16"><table class="table"><thead><tr><th>维度</th><th class="num">得分</th>' +
+             '<th>依据</th></tr></thead><tbody>';
+        it.breakdown.forEach(function (b) {
+          h += '<tr><td>' + b.label + '</td>' +
+               '<td class="num">+' + b.delta + ' / ' + b.max + '</td>' +
+               '<td class="small muted">' + esc(b.detail) + '</td></tr>';
+        });
+        h += '<tr><td><b>合计</b></td><td class="num"><b>' + it.score + ' / 100</b></td>' +
+             '<td class="small muted">五项加权求和</td></tr>';
+        h += '</tbody></table></div>';
+      }
+
+      h += '</div></div>';
+    });
+
+    /* ---------- 筛选过程 ---------- */
+    h += '<div class="card mt16"><div class="card-head"><div><h3>为什么只推荐这几门</h3>' +
+         '<div class="sub">先按硬约束把选不了的剔掉，剩下的才进打分环节</div></div></div>' +
+         '<div class="card-body flush"><div class="table-scroll"><table class="table"><thead><tr>' +
+         '<th>环节</th><th class="num">门数</th><th>说明</th></tr></thead><tbody>';
+
+    var rows = [
+      ['共评估教学班', st.total, '不含并发实验室的虚拟课程'],
+      ['已选 / 已在候补', st.enrolled + ' / ' + st.waitlisted, '选过或排着队的直接跳过'],
+      ['同一门课的其他教学班', st.sameCourse, '课程编码相同，不重复推荐'],
+      ['与现有课表冲突', st.conflict, '时间撞了，先解决冲突'],
+      ['超出本学期学分上限', st.credit, '上限 ' + p.maxCredit + ' 学分'],
+      ['进入打分环节', st.recommended, '按总分排序，展示前 4 门']
+    ];
+    rows.forEach(function (r, i) {
+      var last = i === rows.length - 1;
+      h += '<tr' + (last ? ' style="background:var(--surface-2)"' : '') + '>' +
+           '<td>' + (last ? '<b>' + r[0] + '</b>' : r[0]) + '</td>' +
+           '<td class="num">' + (last ? '<b>' + r[1] + '</b>' : r[1]) + '</td>' +
+           '<td class="small muted">' + esc(r[2]) + '</td></tr>';
+    });
+    h += '</tbody></table></div></div></div>';
+
+    /* ---------- 算法说明 ---------- */
+    h += '<div class="card mt16"><div class="card-head"><div><h3>评分规则</h3>' +
+         '<div class="sub">权重写在 ai.js 里，这张表直接读同一份配置，不会和代码对不上</div></div></div>' +
+         '<div class="card-body">';
+    h += '<div class="ai-legend" style="margin-top:0">' + AI.WEIGHTS.map(function (w) {
+      return '<span><b>' + w.label + '</b> ' + w.max + ' 分</span>';
+    }).join('') + '</div>';
+    h += '<div class="small muted mt16">' +
+      '这是规则引擎，不是大模型：每一分都能对上一条具体数据，所以能解释、也能被追问。' +
+      '接真模型时只需要替换 <code>AI.provider</code>，页面和调用方都不用改。' +
+      '</div></div></div>';
+
+    return h;
+  }
+
   global.Views = {
     login: login, dashboard: dashboard, courses: courses, courseDetail: courseDetail,
     schedule: schedule, myCourses: myCourses, classroom: classroom, signin: signin,
     homework: homework, homeworkDetail: homeworkDetail, messages: messages,
-    profile: profile, teacher: teacher, lab: lab, admin: admin
+    profile: profile, teacher: teacher, lab: lab, admin: admin, aiRecommend: aiRecommend
   };
   global.ViewUtils = { esc: esc, fmtLeft: fmtLeft, fmtSize: fmtSize, capBar: capBar };
 })(window);

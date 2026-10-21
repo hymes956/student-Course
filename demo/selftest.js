@@ -2,8 +2,10 @@
 globalThis.window = globalThis;
 require(require('path').join(__dirname,'assets','data.js'));
 require(require('path').join(__dirname,'assets','store.js'));
+require(require('path').join(__dirname,'assets','ai.js'));
 
 var S = globalThis.Store;
+var AI = globalThis.AI;
 var fail = 0;
 function ok(cond, label, extra) {
   console.log((cond ? '  PASS  ' : '  FAIL  ') + label + (extra ? '   ' + extra : ''));
@@ -235,6 +237,83 @@ function ok(cond, label, extra) {
   var allOfferings = S.load().offerings.filter(function (o) { return !o.isLab; }).length;
   ok(catSum === allOfferings, '各方向教学班之和 = 全部教学班',
      catSum + ' / ' + allOfferings);
+
+  console.log('\n=== 14. AI 选课推荐 ===');
+  S.reset();
+  var rec = AI.recommend('2023001');
+
+  ok(rec.items.length > 0, '有推荐结果', rec.items.length + ' 门');
+
+  /* 硬约束的六个分支加起来必须等于全部教学班，否则就是漏了某类课 */
+  var parts = rec.stats.enrolled + rec.stats.waitlisted + rec.stats.sameCourse +
+              rec.stats.conflict + rec.stats.credit + rec.stats.recommended;
+  ok(parts === rec.stats.total, '筛选各分支之和 = 全部教学班',
+     rec.stats.enrolled + '(已选)+' + rec.stats.waitlisted + '(候补)+' +
+     rec.stats.sameCourse + '(同课)+' + rec.stats.conflict + '(冲突)+' +
+     rec.stats.credit + '(超学分)+' + rec.stats.recommended + '(推荐) = ' +
+     parts + ' / ' + rec.stats.total);
+
+  /* 推荐里不能出现已经选过的课 */
+  var enrolledIds = S.myEnrollments('2023001').map(function (e) { return e.offeringId; });
+  var badEnrolled = rec.all.filter(function (it) { return enrolledIds.indexOf(it.offeringId) >= 0; });
+  ok(badEnrolled.length === 0, '不会推荐已经选过的课',
+     badEnrolled.map(function (x) { return x.offeringId; }).join(',') || '共 ' + enrolledIds.length + ' 门已选');
+
+  /* 也不能推荐跟现有课表冲突的课 */
+  var badConflict = rec.all.filter(function (it) { return S.findConflict('2023001', it.offeringId); });
+  ok(badConflict.length === 0, '不会推荐与课表冲突的课',
+     badConflict.map(function (x) { return x.offeringId; }).join(',') || '已避开 ' + rec.stats.conflict + ' 门冲突课');
+
+  /* 总分必须等于五项之和，否则"评分明细"就是假的 */
+  var badSum = rec.all.filter(function (it) {
+    var sum = it.breakdown.reduce(function (n, b) { return n + b.delta; }, 0);
+    return sum !== it.score;
+  });
+  ok(badSum.length === 0, '每门课总分 = 各维度得分之和');
+
+  /* 单项不能超过它自己的权重上限 */
+  var overMax = [];
+  rec.all.forEach(function (it) {
+    it.breakdown.forEach(function (b) { if (b.delta > b.max) overMax.push(it.offeringId + '/' + b.label); });
+  });
+  ok(overMax.length === 0, '单项得分不超过权重上限', overMax.join(',') || '满分 100');
+
+  var sorted = rec.all.every(function (it, i, a) { return i === 0 || a[i - 1].score >= it.score; });
+  ok(sorted, '推荐结果按总分降序', rec.all.map(function (x) { return x.score; }).join(' ≥ '));
+
+  /* 同样输入必须得到同样结果，否则演示时每次刷新都在变 */
+  var recAgain = AI.recommend('2023001');
+  ok(JSON.stringify(recAgain.all.map(function (x) { return x.offeringId + ':' + x.score; })) ===
+     JSON.stringify(rec.all.map(function (x) { return x.offeringId + ':' + x.score; })),
+     '同样输入结果稳定（可复现）');
+
+  /* 个性化：不同专业的学生，首位推荐应该不一样 */
+  var recOther = AI.recommend('2023005');
+  ok(recOther.items[0].offeringId !== rec.items[0].offeringId, '不同专业学生首位推荐不同',
+     rec.items[0].name + ' ↔ ' + recOther.items[0].name);
+
+  /* 满员课程要给出候补排位，而不是直接判死 */
+  var recFull = AI.recommend('2023003');
+  var fullOnes = recFull.all.filter(function (it) { return it.full; });
+  var capIdx = 3; /* 名额情况在 breakdown 里的下标 */
+  ok(fullOnes.length === 0 || fullOnes.every(function (it) { return /候补/.test(it.breakdown[capIdx].detail); }),
+     '满员课程在名额维度给出候补排位',
+     fullOnes.length ? fullOnes[0].breakdown[capIdx].detail : '本次候选里没有满员课');
+
+  console.log('\n=== 15. 选课轮次不能是过去时间 ===');
+  /* 这里踩过坑：轮次写死成 2026-09-30，过了那天整个演示的"选课"全部报
+     「本轮选课已结束」，而且只有真跑起来才会发现。 */
+  S.reset();
+  var round = S.load().enrollRound;
+  ok(S.parseDateTime(round.closeAt) > S._now(), '选课截止时间晚于当前时间', round.closeAt);
+  ok(S.parseDateTime(round.openAt) <= S._now(), '选课开放时间早于当前时间', round.openAt);
+
+  /* 端到端：推荐出来的课，真的能选上 */
+  var topPick = AI.recommend('2023001').items[0];
+  var pickRes = await S.selectCourse('2023001', topPick.offeringId);
+  ok(pickRes.ok, '推荐第一名的课能真的选上',
+     pickRes.ok ? topPick.name + ' / ' + topPick.offeringId : pickRes.reason);
+  S.reset();
 
   console.log('\n' + (fail === 0 ? '全部通过 ✅' : fail + ' 项失败 ❌'));
   process.exit(fail === 0 ? 0 : 1);
