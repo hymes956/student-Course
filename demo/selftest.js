@@ -3,9 +3,14 @@ globalThis.window = globalThis;
 require(require('path').join(__dirname,'assets','data.js'));
 require(require('path').join(__dirname,'assets','store.js'));
 require(require('path').join(__dirname,'assets','ai.js'));
+require(require('path').join(__dirname,'assets','grading.js'));
+require(require('path').join(__dirname,'assets','warning.js'));
 
 var S = globalThis.Store;
 var AI = globalThis.AI;
+var G = globalThis.Grading;
+var W = globalThis.Warning;
+var SEED = globalThis.SEED;
 var fail = 0;
 function ok(cond, label, extra) {
   console.log((cond ? '  PASS  ' : '  FAIL  ') + label + (extra ? '   ' + extra : ''));
@@ -171,7 +176,10 @@ function ok(cond, label, extra) {
   ok(ov.enrollRows === ov.selected, '选课行数与已选人次一致');
   ok(ov.attendanceRate > 0.8 && ov.attendanceRate < 0.95, '出勤率落在合理区间',
      Math.round(ov.attendanceRate * 100) + '%（' + ov.signedTotal + ' / ' + ov.expectedTotal + '）');
-  ok(ov.hwRate > 0 && ov.hwRate < 0.2, '作业提交率偏低（符合演示初始状态）',
+  /* 提交率不再"偏低"：为了让学业预警有区分度，buildFresh 会给非演示学生
+     补提交记录（见 store.js）。这里守住"大多数人交了、少数没交"这个分布 ——
+     如果生成逻辑坏掉（比如全交或全不交），区间断言会立刻失败。 */
+  ok(ov.hwRate > 0.6 && ov.hwRate < 0.9, '作业提交率接近真实分布',
      Math.round(ov.hwRate * 100) + '%');
   var cats = S.statsByCategory();
   ok(cats.length === 4 && cats.every(function (c) { return c.offerings === 4; }), '4 个方向各 4 门课');
@@ -313,6 +321,206 @@ function ok(cond, label, extra) {
   var pickRes = await S.selectCourse('2023001', topPick.offeringId);
   ok(pickRes.ok, '推荐第一名的课能真的选上',
      pickRes.ok ? topPick.name + ' / ' + topPick.offeringId : pickRes.reason);
+  S.reset();
+
+  console.log('\n=== 16. AI 批改建议（教师侧） ===');
+  /* 这套建议的价值全在"可核对"上，所以断言重点不是分数好不好看，
+     而是：细则配全了没有、分数加得对不对、给建议会不会偷偷改数据。 */
+  S.reset();
+  ok(!!G, '评分助手已加载');
+
+  /* 16.1 细则完整性：每份作业都要有 rubric，各维度满分之和 = 作业满分 */
+  var rubricIssues = [];
+  SEED.assignments.forEach(function (a) {
+    var r = G.rubricOf(a.id);
+    if (!r) { rubricIssues.push(a.id + ' 缺细则'); return; }
+    var sum = r.reduce(function (n, d) { return n + d.max; }, 0);
+    if (sum !== a.fullScore) rubricIssues.push(a.id + ' 满分和 ' + sum + '≠' + a.fullScore);
+    r.forEach(function (d) {
+      var w = d.checks.reduce(function (n, c) { return n + c.w; }, 0);
+      if (Math.abs(w - 1) > 1e-9) rubricIssues.push(a.id + '/' + d.label + ' 权重和 ' + w);
+    });
+  });
+  ok(rubricIssues.length === 0, '6 份作业的评分细则完整、权重归一',
+     rubricIssues.length ? rubricIssues.join(' ; ') : '各维度满分之和均等于作业满分');
+
+  /* 16.2 分数自洽：建议总分 = 各维度得分之和，且落在 0..100 */
+  var sugIssues = [];
+  S.load().submissions.forEach(function (sub) {
+    var r = G.suggest(sub.id);
+    if (!r.ok) { sugIssues.push(sub.id + ' ' + r.reason); return; }
+    var sum = r.dimensions.reduce(function (n, d) { return n + d.score; }, 0);
+    if (sum !== r.suggested) sugIssues.push(sub.id + ' 总分 ' + r.suggested + '≠各项和 ' + sum);
+    if (r.suggested < 0 || r.suggested > 100) sugIssues.push(sub.id + ' 越界 ' + r.suggested);
+    if (!r.draftComment) sugIssues.push(sub.id + ' 无评语');
+  });
+  ok(sugIssues.length === 0, '每条建议的总分都等于各维度之和',
+     sugIssues.length ? sugIssues.join(' ; ') : '共 ' + S.load().submissions.length + ' 条提交');
+
+  /* 16.3 区分度：覆盖全部要点的提交，必须明显高于只写一句话的 */
+  var goodSug = G.suggest('SUB-3'), badSug = G.suggest('SUB-5');
+  ok(goodSug.suggested > badSug.suggested + 30, '写得全的分数明显高于敷衍的',
+     goodSug.suggested + ' 分 vs ' + badSug.suggested + ' 分');
+  ok(badSug.flags.length > 0 && /完全没有涉及/.test(badSug.flags.join('')),
+     '敷衍的提交会被指出漏掉的维度', badSug.flags[0]);
+
+  /* 16.4 空内容不能崩：给 0 分 + 最低置信度 */
+  var stTmp = S.load();
+  stTmp.submissions.push({
+    id: 'SUB-TMP', assignmentId: 'ASG-DAR201-1', studentId: '2023001',
+    content: '', fileName: '', submitTime: '2026-09-28 10:00', isLate: false,
+    score: null, comment: '', gradedAt: null
+  });
+  var emptySug = G.suggest('SUB-TMP');
+  ok(emptySug.ok && emptySug.suggested === 0, '空内容给 0 分而不是崩溃',
+     emptySug.ok ? emptySug.suggested + ' 分' : emptySug.reason);
+  ok(emptySug.confidence === 'low', '空内容的置信度是最低档', emptySug.confidence);
+  stTmp.submissions.pop();
+
+  /* 16.5 给建议必须是只读的 —— 这条最容易被写崩：顺手把分写进去就全错了 */
+  var beforeSnap = JSON.stringify(S.load().submissions.map(function (x) {
+    return [x.id, x.score, x.comment, x.gradedBy];
+  }));
+  G.suggest('SUB-3');
+  G.suggest('SUB-8');
+  var afterSnap = JSON.stringify(S.load().submissions.map(function (x) {
+    return [x.id, x.score, x.comment, x.gradedBy];
+  }));
+  ok(beforeSnap === afterSnap, '给建议不会改动任何成绩数据');
+
+  /* 16.6 同样输入结果稳定，否则教师每点一次建议分数都在变 */
+  ok(JSON.stringify(G.suggest('SUB-8')) === JSON.stringify(G.suggest('SUB-8')),
+     '同样输入的建议结果可复现');
+
+  /* 16.7 评语要指向具体维度，不能是"整体不错"这种空话 */
+  ok(/「[^」]+」/.test(goodSug.draftComment), '评语引用了具体维度',
+     goodSug.draftComment.slice(0, 34) + '…');
+
+  /* 16.8 落库来源标记：这是"AI 不做最终决定"能不能说清的凭据 */
+  S.reset();
+  S.gradeSubmission('SUB-2', 50, '评语', 'ai-adopted');
+  ok(S.getSubmission('SUB-2').gradedBy === 'ai-adopted', '直接采纳记为 ai-adopted');
+  S.gradeSubmission('SUB-2', 40, '改过的评语', 'ai-edited');
+  ok(S.getSubmission('SUB-2').gradedBy === 'ai-edited', '改后采纳记为 ai-edited');
+  S.gradeSubmission('SUB-2', 60, '手写评语');
+  ok(S.getSubmission('SUB-2').gradedBy === 'manual', '不传来源默认记 manual');
+
+  /* 16.9 采纳率统计 */
+  S.reset();
+  var ad0 = G.adoptionStats('ASG-DAR201-1');
+  ok(ad0.graded === 1 && ad0.manual === 1 && ad0.adopted === 0,
+     '初始 1 份为手工批改', 'AI 参与 ' + ad0.rate + '%');
+  S.gradeSubmission('SUB-2', 50, '评语', 'ai-adopted');
+  var ad1 = G.adoptionStats('ASG-DAR201-1');
+  ok(ad1.graded === 2 && ad1.adopted === 1 && ad1.rate === 50,
+     '采纳 1 条后 AI 参与率 = 50%', '手工 ' + ad1.manual + ' / 采纳 ' + ad1.adopted);
+
+  /* 16.10 提交必须落在真实名单里，否则教师端会出现"查无此人" */
+  S.reset();
+  var stRoster = S.load();
+  var orphan = [];
+  stRoster.submissions.forEach(function (sub) {
+    var a = SEED.assignments.filter(function (x) { return x.id === sub.assignmentId; })[0];
+    if (!a) { orphan.push(sub.id + ' 作业不存在'); return; }
+    var member = stRoster.enrollments.some(function (e) {
+      return e.offeringId === a.offeringId && e.studentId === sub.studentId && e.status === 'selected';
+    });
+    if (!member) orphan.push(sub.id + ' ' + sub.studentId);
+  });
+  ok(orphan.length === 0, '每条提交都落在该教学班的真实名单里',
+     orphan.length ? orphan.join(' ; ') : '共 ' + stRoster.submissions.length + ' 条');
+  S.reset();
+
+  console.log('\n=== 17. 学业预警：规则 ===');
+  S.reset();
+  W._resetCache();
+  var wr = W.evaluate('2023001');
+  ok(wr.ok && wr.level !== 'none', '林晓阳触发预警', wr.levelName + ' · ' + wr.score + ' 分');
+  ok(wr.signals.some(function (s) { return s.id === 'HW-OVERDUE'; }), '逾期作业被识别',
+     wr.metrics.overdue + ' 份');
+  ok(wr.metrics.attendanceRate === 100, '出勤满分不触发出勤规则',
+     wr.metrics.attendanceRate + '%');
+
+  /* 每条命中的规则都必须能展开到具体记录 —— 否则预警就只是个红点 */
+  var noEv = wr.signals.filter(function (s) { return !s.evidence || !s.evidence.length; });
+  ok(noEv.length === 0, '每条命中规则都有证据',
+     noEv.map(function (s) { return s.label; }).join(',') || '共 ' + wr.signals.length + ' 条');
+
+  var badEv = [];
+  wr.signals.forEach(function (s) {
+    s.evidence.forEach(function (e) {
+      if (e.kind === 'assignment' &&
+          !SEED.assignments.some(function (a) { return a.id === e.ref; })) badEv.push(e.ref);
+    });
+  });
+  ok(badEv.length === 0, '作业类证据都指向真实作业', badEv.join(',') || '全部可追溯');
+
+  var sc = W.school();
+  var creditHit = sc.ruleHits['CREDIT'] || 0;
+  /* 这套种子数据的学分是分档的（20/26/32/38/44）。阈值如果只用绝对值，
+     会把整档学生一次性标出来；双阈值的作用就是把命中率压下来。 */
+  ok(creditHit / sc.total < 0.3, '学分规则命中率 < 30%（双阈值没整档误伤）',
+     creditHit + ' / ' + sc.total + ' = ' + Math.round(creditHit / sc.total * 100) + '%');
+
+  var distSum = sc.dist.none + sc.dist.watch + sc.dist.warn + sc.dist.critical;
+  ok(distSum === sc.total, '四档之和 = 学生总数', distSum + ' / ' + sc.total);
+  ok(sc.rows.length === sc.total - sc.dist.none, '名单条数 = 非正常人数',
+     sc.rows.length + ' 条');
+
+  var sorted = true;
+  for (var wi = 1; wi < sc.rows.length; wi++) {
+    var pa = sc.rows[wi - 1], pb = sc.rows[wi];
+    var ra = W.levelOf(pa.level).rank, rb = W.levelOf(pb.level).rank;
+    if (ra < rb || (ra === rb && pa.score < pb.score)) sorted = false;
+  }
+  ok(sorted, '名单按等级、风险分降序');
+  ok(sc.rows.every(function (r) { return r.score >= 0 && r.score <= 100; }),
+     '风险分都落在 0-100');
+
+  console.log('\n=== 18. 学业预警：生命周期 ===');
+  S.reset();
+  var rc1 = W.reconcile('2023001');
+  ok(rc1.created.length > 0, '首次重算生成预警', rc1.created.length + ' 条');
+  var rc2 = W.reconcile('2023001');
+  ok(rc2.created.length === 0 && rc2.updated.length === 0, '重复重算不重复生成',
+     '新建 ' + rc2.created.length + ' / 更新 ' + rc2.updated.length);
+
+  var w0 = W.activeWarningsOf('2023001')[0];
+  var itvRes = W.intervene(w0.id, '已电话联系，学生承诺 3 天内补齐', 'reminder');
+  ok(itvRes.ok && W.activeWarningsOf('2023001')[0].status === 'intervening',
+     '干预后状态转为 intervening');
+  ok(W.evaluate('2023001').level !== 'none',
+     '干预本身不会消掉预警（必须靠重算）', W.evaluate('2023001').levelName);
+
+  /* 补齐逾期作业后，规则不再命中，预警应当自动解除 */
+  var stFix = S.load();
+  S.myAssignmentList('2023001').forEach(function (x) {
+    if (x.status !== 'overdue' && x.status !== 'closed') return;
+    if (stFix.submissions.some(function (z) {
+      return z.assignmentId === x.assignment.id && z.studentId === '2023001';
+    })) return;
+    stFix.submissions.push({
+      id: 'SUB-FIX-' + x.assignment.id, assignmentId: x.assignment.id, studentId: '2023001',
+      content: '补齐提交', fileName: '补交.zip', fileSize: 1024,
+      submitTime: '2026-10-20 10:00', isLate: true,
+      score: 70, comment: '补交', gradedAt: '2026-10-21 10:00'
+    });
+  });
+  S.save();
+  var rc3 = W.reconcile('2023001');
+  ok(rc3.resolved.length > 0, '补齐作业后自动解除',
+     rc3.resolved.map(function (w) { return w.label; }).join(',') || '无');
+  ok(W.evaluate('2023001').level === 'none', '解除后等级回到正常',
+     W.evaluate('2023001').levelName);
+  ok(rc3.resolved.every(function (w) { return !!w.resolvedReason; }), '解除必须写明原因');
+
+  console.log('\n=== 19. 学业预警：教师端名单 ===');
+  S.reset();
+  var ros = W.roster('DAR201-01');
+  var rosTotal = S.rosterOf('DAR201-01').length;
+  ok(ros.every(function (r) { return r.level !== 'none'; }), '名单只含有预警的学生',
+     ros.length + ' / ' + rosTotal + ' 人');
+  ok(ros.length <= rosTotal, '名单不会超出班级人数');
   S.reset();
 
   console.log('\n' + (fail === 0 ? '全部通过 ✅' : fail + ' 项失败 ❌'));

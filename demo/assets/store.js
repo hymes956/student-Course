@@ -12,7 +12,10 @@
 (function (global) {
   'use strict';
 
+  /* 存储 key 保持不变（老用户的旧数据会因 version 不符被覆盖重建），
+     version 才是数据结构的版本号：改种子数据结构就 +1，浏览器下次打开自动重建。 */
   var KEY = 'course-demo-state-v1';
+  var STATE_VERSION = 3;
   var state = null;
 
   var DAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -128,7 +131,7 @@
 
   function buildFresh() {
     var s = {
-      version: 1,
+      version: STATE_VERSION,
       term: SEED.term,
       termKey: SEED.termKey,
       maxCredit: SEED.maxCredit,
@@ -139,7 +142,11 @@
       enrollments: [],
       sessions: clone(SEED.pastSessions),
       submissions: clone(SEED.submissions),
-      messages: clone(SEED.messages)
+      messages: clone(SEED.messages),
+      /* 学业预警：warnings 由 warning.js 的 reconcile 生成，这里只给空表；
+         干预记录带种子，让教师端一打开就有历史可看 */
+      warnings: [],
+      interventions: clone(SEED.interventions || [])
     };
 
     /* 关键：把每门课的 selectedCount 落成真实的选课行，
@@ -223,6 +230,58 @@
       if (alt) sub.studentId = alt.studentId;
     });
 
+    /* 给非演示学生补齐提交记录 —— 缺了这一步，"逾期"会变成 90 人里 41 人的
+       常态（多数人根本没交过），预警就失去区分度：那是数据缺失，不是风险信号。
+       三条约束：
+         1. 2023001-2023006 是演示账号，保持原样（林晓阳要留 4 份逾期撑故事）
+         2. ASG-DAR201-1 保持原样（自测断言强绑了它的 31/2/1/29/82）
+         3. 用学号做种子而不是 Math.random —— 否则每次重建统计都不一样，
+            "预警名单"会自己变，演示就不可信了 */
+    var DEMO_IDS = { '2023001': 1, '2023002': 1, '2023003': 1, '2023004': 1, '2023005': 1, '2023006': 1 };
+    var subSeq = s.submissions.length;
+    SEED.assignments.forEach(function (a) {
+      if (a.id === 'ASG-DAR201-1') return;
+      var rows = s.enrollments.filter(function (e) {
+        return e.offeringId === a.offeringId && e.status === 'selected';
+      });
+      var dl = parseDateTime(a.deadline);
+      rows.forEach(function (e) {
+        if (DEMO_IDS[e.studentId]) return;
+        if (s.submissions.some(function (x) {
+          return x.assignmentId === a.id && x.studentId === e.studentId;
+        })) return;
+
+        var roll = (+e.studentId.slice(-3) * 7 + a.id.length * 13) % 100;
+        if (roll < 12) return;                       /* 12% 不交，成为逾期 */
+        var late = roll >= 88;                       /* 12% 迟交 */
+        var graded = (roll % 10) < 7;
+        var score = late ? Math.max(55, 62 + (roll % 30) - 8) : 62 + (roll % 30);
+        var t = new Date(dl.getTime() + (late ? (1 + roll % 3) : -(1 + roll % 2)) * 86400000);
+        subSeq++;
+        s.submissions.push({
+          id: 'SUB-' + subSeq,
+          assignmentId: a.id,
+          studentId: e.studentId,
+          content: '已完成「' + a.title + '」，' + (roll % 3 === 0
+            ? '共完成 ' + (3 + roll % 5) + ' 个分析步骤，关键数据已整理在报告中。'
+            : roll % 3 === 1
+              ? '过程中遇到的问题与处理方式已逐条记录，结果见附件。'
+              : '按要求完成全部任务，附源文件与结果截图。'),
+          fileName: a.title + '_' + e.studentId + '.zip',
+          fileSize: 2000000 + (roll % 40) * 250000,
+          submitTime: fmtDateTime(t),
+          isLate: late,
+          score: graded ? score : null,
+          comment: graded
+            ? (score >= 85 ? '完成质量高，细节到位。'
+               : score >= 70 ? '基本符合要求，个别部分可再完善。'
+               : '完成度偏低，建议对照任务书补充。')
+            : '',
+          gradedAt: graded ? fmtDateTime(new Date(t.getTime() + 2 * 86400000)) : null
+        });
+      });
+    });
+
     return s;
   }
 
@@ -234,7 +293,7 @@
         var raw = ls.getItem(KEY);
         if (raw) {
           var parsed = JSON.parse(raw);
-          if (parsed && parsed.version === 1) { state = parsed; ensureRoundOpen(); return state; }
+          if (parsed && parsed.version === STATE_VERSION) { state = parsed; ensureRoundOpen(); return state; }
         }
       } catch (e) { /* 数据损坏则重建 */ }
     }
@@ -860,7 +919,21 @@
     return { ok: true, updated: false, late: late };
   }
 
-  function gradeSubmission(submissionId, score, comment) {
+  function getSubmission(submissionId) {
+    var s = load();
+    for (var i = 0; i < s.submissions.length; i++) {
+      if (s.submissions[i].id === submissionId) return s.submissions[i];
+    }
+    return null;
+  }
+
+  /* source 记录这条分数是怎么来的：
+       'manual'      教师自己打的
+       'ai-adopted'  直接采纳 AI 建议，没改
+       'ai-edited'   采纳后改过分数或评语
+     这不是审计用的花架子 —— 教师端要显示"AI 建议采纳率"，
+     也要能回答"哪些分是 AI 定的"，否则人机协同说不清楚。 */
+  function gradeSubmission(submissionId, score, comment, source) {
     var s = load();
     for (var i = 0; i < s.submissions.length; i++) {
       if (s.submissions[i].id === submissionId) {
@@ -868,6 +941,7 @@
         sub.score = Number(score);
         sub.comment = comment || '';
         sub.gradedAt = fmtDateTime(now());
+        sub.gradedBy = source || 'manual';
         /* 只给当事学生推消息（演示里就是当前登录用户） */
         if (s.currentUserId === sub.studentId) {
           var a = null;
@@ -1238,7 +1312,7 @@
     /* 作业 */
     assignmentView: assignmentView, myAssignmentList: myAssignmentList,
     submitHomework: submitHomework, gradeSubmission: gradeSubmission, homeworkStats: homeworkStats,
-    gradingStats: gradingStats,
+    gradingStats: gradingStats, getSubmission: getSubmission,
     /* 统计与导出 */
     enrolledCountOf: enrolledCountOf, attendanceMapOf: attendanceMapOf,
     statsOverview: statsOverview, statsByCategory: statsByCategory, statsOfferings: statsOfferings,

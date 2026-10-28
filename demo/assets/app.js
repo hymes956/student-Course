@@ -23,7 +23,14 @@
       labSame: 0,
       sheetOpen: false,
       /* null = 默认展开第一条推荐；'' = 全部收起；其他值 = 展开该教学班 */
-      aiOpen: null
+      aiOpen: null,
+      /* 当前展开 AI 建议面板的那条提交 id */
+      aiSuggestFor: null,
+      /* 学业预警：当前视角 / 展开的证据或学生 / 教师端教学班 / 展开干预输入的预警 id */
+      warningTab: 'me',
+      warnOpen: undefined,
+      warnOffering: 'DAR201-01',
+      warnItvFor: null
     }
   };
   global.App = App;
@@ -44,6 +51,7 @@
     bolt: '<path d="M9.2 2 4 9h3.3l-.9 5L12 7H8.6z"/>',
     chart: '<path d="M3 13.2V8.6M6.3 13.2V4M9.7 13.2V9.4M13 13.2V6.2"/>',
     spark: '<path d="M8 2.2l1.4 4.2 4.2 1.4-4.2 1.4L8 13.4 6.6 9.2 2.4 7.8l4.2-1.4z"/>',
+    alert: '<path d="M8 2.4 1.9 13.2h12.2z"/><path d="M8 6.6v3.1M8 11.6v.1"/>',
     more: '<circle cx="3.6" cy="3.6" r="1.35" fill="currentColor"/><circle cx="8" cy="3.6" r="1.35" fill="currentColor"/>' +
           '<circle cx="12.4" cy="3.6" r="1.35" fill="currentColor"/><circle cx="3.6" cy="8" r="1.35" fill="currentColor"/>' +
           '<circle cx="8" cy="8" r="1.35" fill="currentColor"/><circle cx="12.4" cy="8" r="1.35" fill="currentColor"/>' +
@@ -74,6 +82,7 @@
     ] },
     { group: '演示', items: [
       { id: 'ai', label: 'AI 选课推荐', icon: 'spark' },
+      { id: 'warning', label: '学业预警', icon: 'alert' },
       { id: 'teacher', label: '教师端', icon: 'board' },
       { id: 'admin', label: '教务看板', icon: 'chart' },
       { id: 'lab', label: '并发实验室', icon: 'bolt' }
@@ -97,6 +106,7 @@
     { id: 'messages', label: '消息通知', icon: 'bell', group: '其他' },
     { id: 'profile', label: '个人中心', icon: 'user', group: '其他' },
     { id: 'ai', label: 'AI 选课推荐', icon: 'spark', group: '演示' },
+    { id: 'warning', label: '学业预警', icon: 'alert', group: '演示' },
     { id: 'teacher', label: '教师端', icon: 'board', group: '演示' },
     { id: 'admin', label: '教务看板', icon: 'chart', group: '演示' },
     { id: 'lab', label: '并发实验室', icon: 'bolt', group: '演示' }
@@ -134,6 +144,13 @@
       case 'profile': return { title: '个人中心', html: V.profile() };
       case 'teacher': return { title: '教师端', html: V.teacher() };
       case 'ai': return { title: 'AI 选课推荐', html: V.aiRecommend() };
+      case 'warning': {
+        /* 进页面先重算当前学生，让预警状态表跟上最新数据 ——
+           这正是"解除靠重算"的落点：补交作业后回到这页，状态会自己变。 */
+        var meW = S.currentUser();
+        if (meW && global.Warning) global.Warning.reconcile(meW.id);
+        return { title: '学业预警', html: V.warning() };
+      }
       case 'admin': return { title: '教务统计看板', html: V.admin() };
       case 'lab': return { title: '并发实验室', html: V.lab() };
       default: return { title: '工作台', html: V.dashboard() };
@@ -253,6 +270,17 @@
     if (selA) {
       selA.addEventListener('change', function () {
         App.ui.teacherAssignment = selA.value;
+        App.ui.aiSuggestFor = null;
+        render();
+      });
+    }
+    /* 学业预警：教师端教学班下拉 */
+    var selW = document.getElementById('warn-offering');
+    if (selW) {
+      selW.addEventListener('change', function () {
+        App.ui.warnOffering = selW.value;
+        App.ui.warnOpen = undefined;
+        App.ui.warnItvFor = null;
         render();
       });
     }
@@ -408,8 +436,90 @@
 
       case 'gfilter':
         App.ui.gradeFilter = el.getAttribute('data-f');
+        App.ui.aiSuggestFor = null;
         render();
         break;
+
+      case 'ai-suggest':
+        /* 再点一次同一条就收起 */
+        App.ui.aiSuggestFor = App.ui.aiSuggestFor === id ? null : id;
+        render();
+        break;
+
+      case 'ai-adopt': {
+        /* 采纳只是把值填进输入框，不落库。
+           落库仍然要走下面的 do-grade，教师必须自己按保存。 */
+        var sug = global.Grading && global.Grading.suggest(id);
+        if (!sug || !sug.ok) { toast((sug && sug.reason) || '没有可用的建议', 'err'); break; }
+        var sEl = document.getElementById('score-' + id);
+        var cEl = document.getElementById('comment-' + id);
+        if (!sEl || !cEl) { toast('找不到输入框，请刷新重试', 'err'); break; }
+        sEl.value = sug.suggested;
+        cEl.value = sug.draftComment;
+        /* 记下 AI 的原值，保存时用来判断教师有没有改过 */
+        sEl.setAttribute('data-ai-score', sug.suggested);
+        sEl.setAttribute('data-ai-comment', sug.draftComment);
+        cEl.classList.add('ai-filled');
+        App.ui.aiSuggestFor = null;
+        render();
+        /* 重渲染后把焦点和已填内容补回去 */
+        var s2 = document.getElementById('score-' + id);
+        var c2 = document.getElementById('comment-' + id);
+        if (s2 && c2) {
+          s2.value = sug.suggested;
+          c2.value = sug.draftComment;
+          s2.setAttribute('data-ai-score', sug.suggested);
+          s2.setAttribute('data-ai-comment', sug.draftComment);
+          c2.classList.add('ai-filled');
+          s2.focus();
+          s2.select();
+        }
+        toast('已填入建议分数和评语，核对后点「保存」才会生效', 'ok');
+        break;
+      }
+
+      /* ---------- 学业预警 ---------- */
+      case 'wtab':
+        App.ui.warningTab = el.getAttribute('data-tab');
+        App.ui.warnOpen = undefined;
+        App.ui.warnItvFor = null;
+        render();
+        break;
+
+      case 'wopen':
+        /* 再点一次同一条就收起 */
+        App.ui.warnOpen = App.ui.warnOpen === id ? '' : id;
+        App.ui.warnItvFor = null;
+        render();
+        break;
+
+      case 'wopen-itv':
+        App.ui.warnItvFor = App.ui.warnItvFor === id ? null : id;
+        render();
+        break;
+
+      case 'do-itv': {
+        var noteEl = document.getElementById('itv-note-' + id);
+        var typeEl = document.getElementById('itv-type-' + id);
+        var note = noteEl ? noteEl.value : '';
+        if (!String(note).trim()) { toast('请填写干预说明', 'err'); break; }
+        var ws = global.Warning.activeWarningsOf(id);
+        if (!ws.length) { toast('该学生当前没有有效预警', 'err'); break; }
+        var itvRes = global.Warning.intervene(ws[0].id, note, typeEl ? typeEl.value : 'reminder');
+        toast(itvRes.ok ? '已记录干预 —— 预警不会因此消掉，学生改善后重算才会解除'
+                        : itvRes.reason, itvRes.ok ? 'ok' : 'err');
+        if (itvRes.ok) App.ui.warnItvFor = null;
+        render();
+        break;
+      }
+
+      case 'wrecalc': {
+        var rc = global.Warning.reconcileAll();
+        toast('已重算 ' + rc.students + ' 人：新建 ' + rc.created +
+              ' 条，解除 ' + rc.resolved + ' 条', 'ok');
+        render();
+        break;
+      }
 
       case 'do-login': {
         var nameEl = document.getElementById('login-name');
@@ -649,8 +759,23 @@
         var cm = document.getElementById('comment-' + id);
         var score = parseInt(sc.value, 10);
         if (isNaN(score) || score < 0 || score > 100) { toast('请输入 0-100 之间的分数', 'err'); return; }
-        var rg2 = S.gradeSubmission(id, score, cm.value.trim());
-        toast(rg2.ok ? '已保存评分' : rg2.reason, rg2.ok ? 'ok' : 'err');
+        /* 判断这条分是怎么来的：没填过建议就是手工；
+           和 AI 给的一字不差算"直接采纳"，改过算"改后采纳"。 */
+        var aiScore = sc.getAttribute('data-ai-score');
+        var aiComment = sc.getAttribute('data-ai-comment');
+        var source = 'manual';
+        if (aiScore != null) {
+          source = (String(score) === aiScore && cm.value.trim() === (aiComment || ''))
+            ? 'ai-adopted' : 'ai-edited';
+        }
+        var rg2 = S.gradeSubmission(id, score, cm.value.trim(), source);
+        if (rg2.ok) {
+          toast(source === 'ai-adopted' ? '已保存（采纳 AI 建议）'
+              : (source === 'ai-edited' ? '已保存（AI 建议经修改）' : '已保存评分'), 'ok');
+        } else {
+          toast(rg2.reason, 'err');
+        }
+        App.ui.aiSuggestFor = null;
         render();
         break;
       }

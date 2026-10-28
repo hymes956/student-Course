@@ -176,6 +176,46 @@ svg.mi { width: 19px; height: 19px; }
 .ai-legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 8px; font-size: 12px; color: var(--text-2); }
 .ai-legend b { color: var(--text); font-weight: 600; }
 
+/* ---------- AI 批改建议（教师端） ---------- */
+/* 面板挂在一行提交记录下面，所以背景要比表格亮一档，才能看出层级 */
+.ai-sug-row > td { background: var(--surface-2); padding: 0 !important; border-bottom: 1px solid var(--line); }
+.ai-sug { padding: 16px; border-left: 3px solid var(--purple); }
+.ai-sug-dims {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px; margin-top: 14px;
+}
+.ai-sug-dim {
+  border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  padding: 10px 12px; background: var(--surface);
+}
+.ai-sug-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px;
+}
+.ai-sug-head b { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.ai-sug-head b.ok { color: var(--ok); }
+.ai-sug-head b.bad { color: var(--danger); }
+.ai-sug-checks { display: flex; flex-direction: column; gap: 3px; }
+.chk { font-size: 12px; line-height: 1.45; }
+.chk.hit { color: var(--ok); }
+.chk.miss { color: var(--text-3); }
+.ai-sug-flags {
+  margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-sm);
+  background: var(--warn-50); color: var(--warn); font-size: 12.5px;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ai-sug-draft { margin-top: 14px; }
+.ai-draft-text {
+  padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--surface); border: 1px dashed var(--line);
+  font-size: 13px; line-height: 1.7; color: var(--text);
+}
+/* 采纳后提示教师"这些是 AI 填的，还没保存" */
+.input.ai-filled { border-color: var(--purple); background: var(--purple-50); }
+.col { display: flex; flex-direction: column; gap: 8px; }
+/* 评语可能上百字，让 textarea 按内容长高；不支持的浏览器回退到 rows="3" */
+textarea.input { field-sizing: content; max-height: 180px; }
+
 .grid { display: grid; gap: 14px; }
 .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -507,4 +547,68 @@ textarea.input { resize: vertical; min-height: 92px; line-height: 1.65; }
   .mobile-nav .mi { width: 20px; height: 20px; }
   .code-digits { font-size: 34px; letter-spacing: 8px; }
   .modal { max-width: none; }
+}
+
+/* ---------- 学业预警 ---------- */
+
+/* 顶部结论卡：左侧色条表示等级，一眼看出轻重 */
+.warn-hero { border-left: 3px solid var(--line); }
+.warn-hero.ok { border-left-color: var(--ok); }
+.warn-hero.info { border-left-color: var(--primary); }
+.warn-hero.warn { border-left-color: var(--warn); }
+.warn-hero.danger { border-left-color: var(--danger); }
+
+.warn-score {
+  font-size: 38px; font-weight: 600; line-height: 1;
+  letter-spacing: -1.5px; font-variant-numeric: tabular-nums;
+}
+.warn-score.ok { color: var(--ok); }
+.warn-score.info { color: var(--primary); }
+.warn-score.warn { color: var(--warn); }
+.warn-score.danger { color: var(--danger); }
+.warn-level { font-size: 16px; font-weight: 600; }
+
+.warn-actions { margin-top: 14px; padding-top: 14px; border-top: 1px dashed var(--line); }
+.warn-action { font-size: 13px; color: var(--text-2); line-height: 1.9; }
+
+/* 单条规则：标题行可点，展开就是证据 */
+.warn-item { border-bottom: 1px solid var(--line-2); }
+.warn-item:last-child { border-bottom: none; }
+.warn-item-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 13px 16px; background: none; border: none;
+  cursor: pointer; text-align: left; font-size: 13.5px; color: var(--text);
+}
+.warn-item-head:hover { background: var(--surface-2); }
+.warn-item.open .warn-item-head { background: var(--surface-2); }
+.warn-caret { font-size: 12px; color: var(--primary-600); white-space: nowrap; }
+
+.warn-ev { padding: 4px 16px 16px; background: var(--surface-2); }
+.warn-ev-list { list-style: none; margin: 0; padding: 0; }
+.warn-ev-list li { padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.warn-ev-list li:last-child { border-bottom: none; }
+.warn-ev-t { font-size: 13px; }
+.warn-advice { margin-top: 10px; font-size: 12.5px; color: var(--warn); }
+
+/* 教师端表格里的展开区 */
+.warn-detail { padding: 14px 16px; background: var(--surface-2); }
+.warn-detail-item { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px dashed var(--line); }
+.warn-detail-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.row-open > td { background: var(--surface-2); }
+
+/* 时间线 */
+.warn-tl { list-style: none; margin: 0; padding: 0; }
+.warn-tl li { display: flex; gap: 12px; padding: 8px 0; }
+.warn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  margin-top: 5px; flex: none; background: var(--line-2);
+}
+.warn-dot.ok { background: var(--ok); }
+.warn-dot.info { background: var(--primary); }
+.warn-dot.warn { background: var(--warn); }
+.warn-dot.danger { background: var(--danger); }
+
+/* 窄屏把四个指标压成 2×2：单列的话四张卡要占掉大半屏 */
+@media (max-width: 720px) {
+  .warn-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

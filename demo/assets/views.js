@@ -885,6 +885,72 @@
   }
 
   /* ---------- 教师端 ---------- */
+  /* ---------- AI 批改建议面板 ----------
+     只在教师点「AI 建议」时展开。刻意做成"建议"而不是"结果"：
+     面板里没有任何写入动作，采纳要教师自己点，落库还要再点一次保存。 */
+  var AI_CONF = {
+    high: { label: '证据充分', cls: 'badge-ok' },
+    mid:  { label: '证据一般', cls: 'badge-info' },
+    low:  { label: '证据不足', cls: 'badge-warn' }
+  };
+
+  function aiSuggestPanel(sub) {
+    var G = global.Grading;
+    if (!G) return '<div class="small muted">评分助手未加载（assets/grading.js）。</div>';
+
+    var r = G.suggest(sub.id);
+    if (!r.ok) return '<div class="small muted">' + esc(r.reason) + '</div>';
+
+    var conf = AI_CONF[r.confidence] || AI_CONF.mid;
+    var h = '<div class="ai-sug">';
+
+    /* 头部：分数 + 置信度 + 操作 */
+    h += '<div class="row-between wrap" style="gap:12px;align-items:flex-start">' +
+      '<div><div class="small muted">AI 批改建议 · 按评分细则逐项核对，不是随机估分</div>' +
+        '<div class="row" style="gap:10px;align-items:baseline;margin-top:6px">' +
+          '<span class="ai-score">' + r.suggested + '<span class="unit">分</span></span>' +
+          '<span class="badge ' + conf.cls + '">' + conf.label + '</span>' +
+          '<span class="small dim">内容 ' + r.evidence.chars + ' 字 / 期望 ' + r.evidence.required + ' 字</span>' +
+        '</div></div>' +
+      '<div class="row" style="gap:6px">' +
+        '<button class="btn btn-sm btn-primary" data-act="ai-adopt" data-id="' + sub.id + '">采纳并填入</button>' +
+        '<button class="btn btn-sm btn-ghost" data-act="ai-suggest" data-id="' + sub.id + '">收起</button>' +
+      '</div></div>';
+
+    /* 分项：每项列出命中了什么、漏了什么 */
+    h += '<div class="ai-sug-dims">';
+    r.dimensions.forEach(function (d) {
+      h += '<div class="ai-sug-dim">' +
+        '<div class="ai-sug-head"><span>' + esc(d.label) + '</span>' +
+          '<b class="' + (d.rate >= .8 ? 'ok' : (d.rate > 0 ? '' : 'bad')) + '">' +
+          d.score + ' / ' + d.max + '</b></div>' +
+        '<div class="ai-sug-checks">' +
+          d.checks.map(function (c) {
+            return '<span class="chk ' + (c.hit ? 'hit' : 'miss') + '">' +
+              (c.hit ? '✓' : '✗') + ' ' + esc(c.detail) + '</span>';
+          }).join('') +
+        '</div></div>';
+    });
+    h += '</div>';
+
+    /* 提醒项 */
+    if (r.flags.length) {
+      h += '<div class="ai-sug-flags">' + r.flags.map(function (f) {
+        return '<div>⚠ ' + esc(f) + '</div>';
+      }).join('') + '</div>';
+    }
+
+    /* 评语草稿 */
+    h += '<div class="ai-sug-draft"><div class="small muted mb8">评语草稿（采纳后仍可修改）</div>' +
+      '<div class="ai-draft-text">' + esc(r.draftComment) + '</div></div>';
+
+    h += '<div class="small dim mt12">AI 不会直接写入成绩。点「采纳并填入」只是把分数和评语填进上面的输入框，' +
+      '核对无误后再点「保存」才真正落库。</div>';
+
+    h += '</div>';
+    return h;
+  }
+
   function teacher() {
     var ui = global.App.ui;
     var offeringId = ui.teacherOffering || 'DAR201-01';
@@ -1024,6 +1090,14 @@
               '<span class="small muted" style="width:24px;text-align:right">' + b.n + '</span></div>';
           }).join('') + '</div>';
       }
+
+      /* AI 建议采纳情况 —— 回答"AI 到底帮上忙没有"，也标出哪些分是 AI 定的 */
+      var ad = global.Grading ? global.Grading.adoptionStats(aid) : null;
+      if (ad && ad.graded) {
+        h += '<div class="small muted mt16">已批改 ' + ad.graded + ' 份：手工评分 ' + ad.manual +
+          ' · 直接采纳 AI ' + ad.adopted + ' · AI 建议修改后采纳 ' + ad.edited +
+          (ad.rate != null ? '（AI 参与 ' + ad.rate + '%）' : '') + '</div>';
+      }
       h += '</div>';
 
       /* 筛选 */
@@ -1059,21 +1133,32 @@
           h += '<div class="empty">' + (gf === 'ungraded' ? '全部提交都已批改完成' : '这个分类下没有记录') + '</div>';
         } else {
           h += '<div style="overflow-x:auto"><table class="table"><thead><tr><th>学生</th><th>提交时间</th><th>内容 / 附件</th>' +
-               '<th style="width:110px">分数</th><th style="width:200px">评语</th><th style="width:74px"></th></tr></thead><tbody>';
+               '<th style="width:110px">分数</th><th style="width:240px">评语</th><th style="width:92px"></th></tr></thead><tbody>';
           shown.forEach(function (sub) {
             var stu = S.getStudent(sub.studentId);
+            var sugOpen = ui.aiSuggestFor === sub.id;
             h += '<tr>' +
               '<td>' + esc(stu.name) + '<div class="small dim">' + esc(sub.studentId) + '</div></td>' +
               '<td class="small">' + esc(sub.submitTime) +
                 (sub.isLate ? ' <span class="badge badge-warn">迟交</span>' : '') +
-                (sub.score != null ? '<div class="small dim">' + esc(sub.gradedAt || '') + '</div>' : '') + '</td>' +
+                (sub.score != null ? '<div class="small dim">' + esc(sub.gradedAt || '') +
+                  (sub.gradedBy === 'ai-adopted' ? ' · AI 采纳' : (sub.gradedBy === 'ai-edited' ? ' · AI 改后采纳' : '')) +
+                  '</div>' : '') + '</td>' +
               '<td class="small"><div style="max-width:230px">' + esc((sub.content || '').slice(0, 60)) + '</div>' +
                 (sub.fileName ? '<div class="dim">📎 ' + esc(sub.fileName) + '</div>' : '') + '</td>' +
               '<td><input class="input" id="score-' + sub.id + '" type="number" min="0" max="100" value="' +
                 (sub.score == null ? '' : sub.score) + '" placeholder="—"></td>' +
-              '<td><input class="input" id="comment-' + sub.id + '" value="' + esc(sub.comment || '') + '" placeholder="评语"></td>' +
-              '<td><button class="btn btn-sm btn-primary" data-act="do-grade" data-id="' + sub.id + '">保存</button></td>' +
+              '<td><textarea class="input" id="comment-' + sub.id + '" rows="3" placeholder="评语">' +
+                esc(sub.comment || '') + '</textarea></td>' +
+              '<td><div class="col" style="gap:5px">' +
+                '<button class="btn btn-sm btn-primary" data-act="do-grade" data-id="' + sub.id + '">保存</button>' +
+                '<button class="btn btn-sm btn-ghost" data-act="ai-suggest" data-id="' + sub.id + '">' +
+                  (sugOpen ? '收起建议' : 'AI 建议') + '</button>' +
+              '</div></td>' +
             '</tr>';
+            if (sugOpen) {
+              h += '<tr class="ai-sug-row"><td colspan="6">' + aiSuggestPanel(sub) + '</td></tr>';
+            }
           });
           h += '</tbody></table></div>';
         }
@@ -1442,11 +1527,355 @@
     return h;
   }
 
+  /* =========================================================
+   * 学业预警
+   * 三端共用一个页面，用 seg 切换视角：
+   *   我的预警（学生）/ 班级名单（教师）/ 全校分布（教务）
+   * ========================================================= */
+
+  var WARN_BADGE = { none: 'badge', watch: 'badge badge-info', warn: 'badge badge-warn', critical: 'badge badge-danger' };
+  var WARN_TONE = { none: 'ok', watch: 'info', warn: 'warn', critical: 'danger' };
+
+  function warnBadge(level) {
+    var lv = global.Warning.levelOf(level);
+    return '<span class="' + (WARN_BADGE[level] || 'badge') + '">' + esc(lv.name) + '</span>';
+  }
+
+  /* 一条规则的证据块 —— 预警之所以可信，全靠这里能点到具体记录 */
+  function warnEvidence(sig) {
+    var h = '<div class="warn-ev">';
+    h += '<div class="small muted mb8">判定阈值：' + esc(sig.threshold) +
+         '　当前：<b>' + sig.value + esc(sig.unit) + '</b></div>';
+    if (!sig.evidence.length) {
+      h += '<div class="small dim">这条规则没有可展开的明细</div>';
+    } else {
+      h += '<ul class="warn-ev-list">';
+      sig.evidence.forEach(function (e) {
+        h += '<li><div class="warn-ev-t">' + esc(e.title) + '</div>' +
+             '<div class="small dim">' + esc(e.detail) + '</div></li>';
+      });
+      h += '</ul>';
+    }
+    h += '<div class="warn-advice">建议：' + esc(sig.advice) + '</div>';
+    h += '</div>';
+    return h;
+  }
+
+  function warnSignalCard(sig, open) {
+    var h = '<div class="warn-item ' + (open ? 'open' : '') + '">';
+    h += '<button class="warn-item-head" data-act="wopen" data-id="' + sig.id + '">';
+    h += '<div class="row" style="gap:10px;align-items:center;flex:1;min-width:0">' +
+         warnBadge(sig.level) +
+         '<b>' + esc(sig.label) + '</b>' +
+         '<span class="small muted">' + esc(sig.dim) + '</span></div>' +
+         '<div class="row" style="gap:12px;align-items:center">' +
+         '<span class="small">' + sig.value + esc(sig.unit) + '</span>' +
+         '<span class="warn-caret">' + (open ? '收起' : '证据') + '</span></div>';
+    h += '</button>';
+    if (open) h += warnEvidence(sig);
+    h += '</div>';
+    return h;
+  }
+
+  /* 干预与解除的时间线：让"预警是个过程"这件事看得见 */
+  function warnTimeline(studentId) {
+    var s = S.load();
+    var rows = [];
+    (s.warnings || []).forEach(function (w) {
+      if (w.studentId !== studentId) return;
+      rows.push({ at: w.createdAt, level: w.level, text: '生成预警 · ' + w.label });
+      if (w.resolvedAt) rows.push({ at: w.resolvedAt, level: 'none', text: '自动解除 · ' + w.label });
+    });
+    (s.interventions || []).forEach(function (itv) {
+      if (itv.studentId !== studentId) return;
+      rows.push({
+        at: itv.at, level: 'watch',
+        text: (itv.type === 'meeting' ? '约谈' : '提醒') + ' · ' + itv.note,
+        by: itv.byName
+      });
+    });
+    if (!rows.length) return '<div class="empty">还没有预警记录</div>';
+    rows.sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+
+    var h = '<ul class="warn-tl">';
+    rows.forEach(function (r) {
+      h += '<li><span class="warn-dot ' + (WARN_TONE[r.level] || 'ok') + '"></span>' +
+           '<div><div class="small">' + esc(r.text) + '</div>' +
+           '<div class="small dim">' + esc(r.at) + (r.by ? ' · ' + esc(r.by) : '') + '</div></div></li>';
+    });
+    h += '</ul>';
+    return h;
+  }
+
+  /* ---------- 学生端 ---------- */
+
+  function warningMe(me) {
+    var W = global.Warning;
+    var ui = global.App.ui;
+    var r = W.evaluate(me.id);
+    if (!r.ok) return '<div class="card"><div class="card-body">' + esc(r.reason) + '</div></div>';
+
+    var tone = WARN_TONE[r.level];
+    var h = '';
+
+    h += '<div class="card warn-hero ' + tone + '"><div class="card-body">' +
+      '<div class="row-between wrap" style="gap:16px">' +
+        '<div class="row" style="gap:16px;align-items:center">' +
+          '<div class="warn-score ' + tone + '">' + r.score + '</div>' +
+          '<div><div class="warn-level">' + esc(r.levelName) +
+            (r.boosted ? ' <span class="small dim">（多维度叠加）</span>' : '') + '</div>' +
+            '<div class="small muted">风险分 0-100 · 命中 ' + r.signals.length + ' 条规则</div></div>' +
+        '</div>' +
+        '<div class="small" style="max-width:380px;line-height:1.7">' + esc(r.summary) + '</div>' +
+      '</div>';
+
+    if (r.actions.length) {
+      h += '<div class="warn-actions"><div class="small muted mb8">接下来该做什么</div>';
+      r.actions.forEach(function (a) {
+        h += '<div class="warn-action">· ' + esc(a) + '</div>';
+      });
+      h += '</div>';
+    }
+    h += '</div></div>';
+
+    /* 指标卡 */
+    var m = r.metrics;
+    h += '<div class="grid grid-4 mb16 warn-metrics">' +
+      '<div class="stat"><div class="stat-num ' + (m.attendanceRate < 80 ? 'danger' : 'ok') + '">' +
+        m.attendanceRate + '<span class="unit">%</span></div>' +
+        '<div class="stat-label">出勤率 · ' + m.attendanceTotal + ' 场，缺勤 ' + m.absent + ' 次</div></div>' +
+      '<div class="stat"><div class="stat-num ' + (m.overdue ? 'warn' : 'ok') + '">' +
+        m.overdue + '<span class="unit">份</span></div>' +
+        '<div class="stat-label">作业逾期 · 已批 ' + m.graded + ' 份' +
+        (m.avgScore != null ? '，均分 ' + m.avgScore : '') + '</div></div>' +
+      '<div class="stat"><div class="stat-num">' + m.earned + '<span class="unit">学分</span></div>' +
+        '<div class="stat-label">累计已修 · 年级中位 ' + m.median + '</div></div>' +
+      '<div class="stat"><div class="stat-num ' + (m.gap >= 16 ? 'warn' : 'ok') + '">' +
+        (m.gap > 0 ? m.gap : 0) + '<span class="unit">学分</span></div>' +
+        '<div class="stat-label">预计毕业缺口 · 按当前修课速度推算</div></div>' +
+    '</div>';
+
+    /* 规则明细 */
+    h += '<div class="card mb16"><div class="card-head"><div><h3>触发详情</h3>' +
+         '<div class="sub">每条都写着阈值和证据，可以逐条核对</div></div></div>' +
+         '<div class="card-body flush">';
+    if (!r.signals.length) {
+      h += '<div class="empty">没有触发任何规则，各项指标都在正常范围</div>';
+    } else {
+      var openId = ui.warnOpen === undefined ? (r.signals[0] ? r.signals[0].id : '') : ui.warnOpen;
+      r.signals.forEach(function (sig) {
+        h += warnSignalCard(sig, sig.id === openId);
+      });
+    }
+    h += '</div></div>';
+
+    /* 时间线 */
+    h += '<div class="card"><div class="card-head"><div><h3>预警时间线</h3>' +
+         '<div class="sub">生成 · 干预 · 解除，都留痕</div></div></div>' +
+         '<div class="card-body">' + warnTimeline(me.id) + '</div></div>';
+
+    return h;
+  }
+
+  /* ---------- 教师端 ---------- */
+
+  function warningClass(ui) {
+    var W = global.Warning;
+    var offeringId = ui.warnOffering || 'DAR201-01';
+    var mine = S.listOfferings({}).filter(function (x) {
+      return x.teacher && (x.teacher.id === 'T01' || x.teacher.id === 'T02');
+    });
+    var v = S.offeringView(offeringId);
+    var rows = W.roster(offeringId);
+    var total = S.rosterOf(offeringId).length;
+
+    var h = '<div class="row-between wrap mb16">' +
+      '<div class="small muted">共 ' + total + ' 人，其中 <b>' + rows.length + '</b> 人触发预警' +
+      '（' + (total ? Math.round(rows.length / total * 100) : 0) + '%）</div>' +
+      '<select class="input" style="width:auto" id="warn-offering">' +
+      mine.map(function (x) {
+        return '<option value="' + x.id + '"' + (x.id === offeringId ? ' selected' : '') + '>' +
+               esc(x.course.name + '（' + x.id + '）') + '</option>';
+      }).join('') + '</select></div>';
+
+    if (!v) return h + '<div class="card"><div class="empty">请选择课程</div></div>';
+    if (!rows.length) return h + '<div class="card"><div class="empty">这个班暂时没有需要预警的学生</div></div>';
+
+    h += '<div class="card"><div class="card-body flush"><div class="table-scroll"><table class="table">' +
+      '<thead><tr><th>学生</th><th>等级</th><th class="num">风险分</th>' +
+      '<th>触发项</th><th>处理状态</th><th style="width:150px"></th></tr></thead><tbody>';
+
+    rows.forEach(function (r) {
+      /* 用干预记录判断处理状态，而不是 warnings 表：
+         教师端不一定会先跑重算，查 warnings 会把"没建档"误判成"待处理"。 */
+      var itvs = W.interventionsOf(r.studentId);
+      var status = itvs.length ? 'intervening' : 'active';
+      var open = ui.warnOpen === r.studentId;
+      var itvOpen = ui.warnItvFor === r.studentId;
+
+      h += '<tr class="' + (open ? 'row-open' : '') + '">' +
+        '<td><b>' + esc(r.student.name) + '</b>' +
+          '<div class="small dim">' + esc(r.studentId) + ' · ' + esc(r.student.className || '') + '</div></td>' +
+        '<td>' + warnBadge(r.level) + '</td>' +
+        '<td class="num"><b>' + r.score + '</b></td>' +
+        '<td class="small">' + r.signals.map(function (s) { return esc(s.label); }).join('、') + '</td>' +
+        '<td class="small">' + (status === 'intervening'
+          ? '<span class="badge badge-purple">已干预</span>'
+          : '<span class="badge">待处理</span>') + '</td>' +
+        '<td><div class="row" style="gap:6px">' +
+          '<button class="btn btn-sm" data-act="wopen" data-id="' + r.studentId + '">' +
+            (open ? '收起' : '证据') + '</button>' +
+          '<button class="btn btn-sm btn-primary" data-act="wopen-itv" data-id="' + r.studentId + '">干预</button>' +
+        '</div></td></tr>';
+
+      if (open) {
+        h += '<tr class="row-detail"><td colspan="6"><div class="warn-detail">';
+        r.signals.forEach(function (sig) {
+          h += '<div class="warn-detail-item"><div class="row" style="gap:8px;align-items:center">' +
+               warnBadge(sig.level) + '<b class="small">' + esc(sig.label) + '</b>' +
+               '<span class="small dim">' + sig.value + esc(sig.unit) + '</span></div>' +
+               warnEvidence(sig) + '</div>';
+        });
+        h += '<div class="small dim mt12">干预记录：' +
+             (itvs.length ? esc(itvs[0].at + ' · ' + itvs[0].note) : '暂无') + '</div>';
+        h += '</div></td></tr>';
+      }
+
+      if (itvOpen) {
+        h += '<tr class="row-detail"><td colspan="6"><div class="warn-detail">' +
+          '<div class="small muted mb8">给 ' + esc(r.student.name) + ' 记录一次干预 —— 写清楚做了什么，后面复盘靠它</div>' +
+          '<textarea class="input" id="itv-note-' + r.studentId + '" rows="2" ' +
+            'placeholder="例如：已电话联系，学生承诺 3 天内补齐逾期作业"></textarea>' +
+          '<div class="row mt8" style="gap:8px">' +
+            '<select class="input" id="itv-type-' + r.studentId + '" style="width:auto">' +
+              '<option value="reminder">消息提醒</option>' +
+              '<option value="meeting">约谈</option>' +
+              '<option value="contact">联系家长</option>' +
+            '</select>' +
+            '<button class="btn btn-sm btn-primary" data-act="do-itv" data-id="' + r.studentId + '">保存干预记录</button>' +
+            '<button class="btn btn-sm" data-act="wopen-itv" data-id="' + r.studentId + '">取消</button>' +
+          '</div></div></td></tr>';
+      }
+    });
+
+    h += '</tbody></table></div></div></div>';
+    h += '<div class="small dim mt12">干预只是留痕，<b>不会</b>直接消掉预警 —— ' +
+         '学生补齐作业后，下次重算会自动降级或解除。这是刻意设计的。</div>';
+    return h;
+  }
+
+  /* ---------- 教务端 ---------- */
+
+  function warningSchool() {
+    var W = global.Warning;
+    var sc = W.school();
+    var order = ['critical', 'warn', 'watch', 'none'];
+
+    var h = '<div class="grid grid-4 mb16">';
+    order.forEach(function (k) {
+      var lv = W.levelOf(k);
+      h += '<div class="stat"><div class="stat-num ' + (k === 'critical' ? 'danger' : k === 'warn' ? 'warn' : '') + '">' +
+        sc.dist[k] + '<span class="unit">人</span></div>' +
+        '<div class="stat-label">' + esc(lv.name) + ' · ' +
+        (sc.total ? Math.round(sc.dist[k] / sc.total * 1000) / 10 : 0) + '%</div>' +
+        '<div class="bar mt8"><i class="' + (k === 'critical' ? 'danger' : k === 'warn' ? 'warn' : k === 'watch' ? '' : 'ok') +
+        '" style="width:' + (sc.total ? Math.round(sc.dist[k] / sc.total * 100) : 0) + '%"></i></div></div>';
+    });
+    h += '</div>';
+
+    h += '<div class="grid grid-2 mb16">';
+
+    /* 分布 */
+    h += '<div class="card"><div class="card-head"><div><h3>等级分布</h3>' +
+         '<div class="sub">' + esc(sc.plan.name) + ' · 总学分 ' + sc.plan.total + '</div></div></div>' +
+         '<div class="card-body">';
+    order.forEach(function (k) {
+      var pct = sc.total ? sc.dist[k] / sc.total * 100 : 0;
+      h += '<div class="mb12"><div class="row-between small mb8">' +
+        '<span>' + esc(W.levelOf(k).name) + '</span>' +
+        '<span class="muted">' + sc.dist[k] + ' 人 · ' + (Math.round(pct * 10) / 10) + '%</span></div>' +
+        '<div class="bar"><i class="' + (k === 'critical' ? 'danger' : k === 'warn' ? 'warn' : k === 'watch' ? '' : 'ok') +
+        '" style="width:' + pct + '%"></i></div></div>';
+    });
+    h += '<div class="small dim mt12">年级学分中位 ' + sc.cohort.median +
+         '，均值 ' + Math.round(sc.cohort.mean * 10) / 10 +
+         '。预警率（含关注）' + sc.rate + '%。</div>';
+    h += '</div></div>';
+
+    /* 规则命中排行 */
+    h += '<div class="card"><div class="card-head"><div><h3>规则命中排行</h3>' +
+         '<div class="sub">哪条规则在批量触发，说明它可能太松</div></div></div>' +
+         '<div class="card-body">';
+    var hits = W.RULES.map(function (rule) {
+      return { rule: rule, n: sc.ruleHits[rule.id] || 0 };
+    }).sort(function (a, b) { return b.n - a.n; });
+    var maxHit = Math.max.apply(null, hits.map(function (x) { return x.n; }).concat([1]));
+    hits.forEach(function (x) {
+      h += '<div class="mb12"><div class="row-between small mb8">' +
+        '<span>' + esc(x.rule.dim + ' · ' + x.rule.label) + '</span>' +
+        '<span class="muted">' + x.n + ' 人</span></div>' +
+        '<div class="bar"><i style="width:' + Math.round(x.n / maxHit * 100) + '%"></i></div></div>';
+    });
+    h += '</div></div>';
+    h += '</div>';
+
+    /* 名单 */
+    h += '<div class="card"><div class="card-head"><div><h3>预警名单</h3>' +
+         '<div class="sub">按等级与风险分排序，前 15 名</div></div>' +
+         '<button class="btn btn-sm" data-act="wrecalc">重算全部</button></div>' +
+         '<div class="card-body flush"><div class="table-scroll"><table class="table">' +
+         '<thead><tr><th>学生</th><th>等级</th><th class="num">风险分</th><th>触发项</th>' +
+         '<th>状态</th></tr></thead><tbody>';
+    sc.rows.slice(0, 15).forEach(function (r) {
+      /* 这里只列当前有预警的人，所以状态只有「待处理 / 已干预」两种。
+         不能用 activeWarningsOf 判断 —— 没跑过重算的学生查不到记录，
+         会被误显示成"已解除"，那是把"没建档"当成了"已恢复"。 */
+      var itvs = W.interventionsOf(r.studentId);
+      h += '<tr><td><b>' + esc(r.student.name) + '</b>' +
+        '<div class="small dim">' + esc(r.studentId) + ' · ' + esc(r.student.className || '') + '</div></td>' +
+        '<td>' + warnBadge(r.level) + '</td>' +
+        '<td class="num"><b>' + r.score + '</b></td>' +
+        '<td class="small">' + r.signals.map(function (s) { return esc(s.label); }).join('、') + '</td>' +
+        '<td class="small">' + (itvs.length
+          ? '<span class="badge badge-purple">已干预 ' + itvs.length + ' 次</span>'
+          : '<span class="badge">待处理</span>') + '</td></tr>';
+    });
+    h += '</tbody></table></div></div></div>';
+
+    return h;
+  }
+
+  function warning() {
+    var me = S.currentUser();
+    var ui = global.App.ui;
+    if (!global.Warning) {
+      return '<div class="card"><div class="card-body">预警引擎未加载。</div></div>';
+    }
+    var tab = ui.warningTab || 'me';
+
+    var h = '';
+    h += '<div class="page-head row-between wrap"><div><h2>学业预警</h2>' +
+         '<div class="sub">7 条规则 · 每条预警都能展开到具体证据 · 解除靠重算，不靠人工点掉</div></div>' +
+         '<span class="badge badge-purple">规则引擎 · 离线运行</span></div>';
+
+    h += '<div class="row wrap mb16"><div class="seg">' +
+      ['me|我的预警', 'class|班级名单', 'school|全校分布'].map(function (x) {
+        var p = x.split('|');
+        return '<button class="seg-item ' + (tab === p[0] ? 'active' : '') +
+          '" data-act="wtab" data-tab="' + p[0] + '">' + p[1] + '</button>';
+      }).join('') + '</div></div>';
+
+    if (tab === 'class') return h + warningClass(ui);
+    if (tab === 'school') return h + warningSchool();
+    return h + warningMe(me);
+  }
+
   global.Views = {
     login: login, dashboard: dashboard, courses: courses, courseDetail: courseDetail,
     schedule: schedule, myCourses: myCourses, classroom: classroom, signin: signin,
     homework: homework, homeworkDetail: homeworkDetail, messages: messages,
-    profile: profile, teacher: teacher, lab: lab, admin: admin, aiRecommend: aiRecommend
+    profile: profile, teacher: teacher, lab: lab, admin: admin, aiRecommend: aiRecommend,
+    warning: warning
   };
   global.ViewUtils = { esc: esc, fmtLeft: fmtLeft, fmtSize: fmtSize, capBar: capBar };
 })(window);
